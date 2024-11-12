@@ -272,3 +272,7 @@ if __name__ == '__main__':
    view = App()
    view.show()
    sys.exit(app.exec_())
+
+
+
+#dasfsdafgbtgtrgrtg
