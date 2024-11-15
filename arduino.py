@@ -6,9 +6,14 @@ from PyQt5.QtGui import QCloseEvent, QIcon, QPixmap, QImage, QKeyEvent, QFont
 from PyQt5.QtCore import QCoreApplication, Qt, QTimer
 import cv2
 import numpy as np
+import torch
+import pathlib
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
-
-
+# Posix 에러 문제 해결 (윈도우 문제)
+temp = pathlib.PosixPath
+pathlib.PosixPath = pathlib.WindowsPath
 
 class App(QWidget):
     ip = "192.168.137.223"
@@ -25,6 +30,9 @@ class App(QWidget):
         # OpenCV 객체검출을 위한 haarcascade 데이터와 라벨 읽어들이기
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.face_detection_enabled = False
+        self.line_tracing_enabled = False
+
+        self.model = torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt')
 
 
     def initUI(self):
@@ -106,8 +114,12 @@ class App(QWidget):
 
         btn12 = QPushButton("Face", self)
         btn12.resize(60, 30)
-        btn12.clicked.connect(self.haaron)
+        btn12.clicked.connect(self.haar)
         # btn12.released.connect(self.haaroff)
+
+        btn13 = QPushButton("Self-Driving", self)
+        btn13.resize(60, 30)
+        btn13.clicked.connect(self.self_driving)
 
 
         # 버튼위치 조정을 위한 격자레이아웃 설정
@@ -180,14 +192,21 @@ class App(QWidget):
     def turnright(self) :
         request.urlopen('http://' + App.ip + "/action?go=turn_right")
 
-    def haaron(self) :
+    def haar(self) :
         self.face_detection_enabled = not self.face_detection_enabled
  
     # def haaroff(self) :
     # self.face_detection_enabled = False
 
+    # 자율주행 클릭 시 동작 여부
+    def self_driving(self) :
+        self.face_detection_enabled = False
+        self.line_tracing_enabled = not self.line_tracing_enabled
+        if not self.line_tracing_enabled :
+            self.stop()
+
     
-    # 버퍼 읽어들여 동영상 만들기 위한 메소드
+    
     def update_frame(self) :
         self.buffer += self.stream.read(4096)
         head = self.buffer.find(b'\xff\xd8')
@@ -200,8 +219,40 @@ class App(QWidget):
                 img = cv2.flip(img, 0)
                 img = cv2.flip(img, 1)
 
+                # YOLO 모델로 객체 검출하여 stop, slow동작
+                if self.line_tracing_enabled :
+                    car_state = "go"
+                    yolo_state = "go"                    
+  
+                    thread_frame = img
+                    self.line_tracing(thread_frame)
+                    results = self.model(thread_frame)
+                    detections = results.pandas().xyxy[0]
+                    if not detections.empty :
+                        for _, detection in detections.iterrows() :
+                            x1, y1, x2, y2 = detection[['xmin', 'ymin', 'xmax', 'ymax']].astype(int).values
+                            label = detection['name']
+                            conf = detection['confidence']
+                            if "stop" in label and conf > 0.3 :
+                                yolo_state = "stop"
+                            elif "slow" in label and conf > 0.3 :
+                                yolo_state = "go"
+
+                            color = [0, 0, 0]
+                            cv2.rectangle(thread_frame, (x1, y1), (x2, y2), color, 2)
+                            cv2.putText(thread_frame, f"{label} {conf : 2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+                    if car_state == "go" and yolo_state == "go" :
+                        self.forward()
+                    elif car_state == "right" and yolo_state == "go" :
+                        self.right()
+                    elif car_state == "left" and yolo_state == "go" :
+                        self.left()
+                    elif yolo_state == "stop" :
+                        self.stop()
+
                 # 객체 검출 시, 필요한 작업
-                if self.face_detection_enabled :
+                elif self.face_detection_enabled :
                     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                     # scaleFactor : 이미지 크기를 얼마나 축소할지 결정
                     # minNeighbor : 얼굴로 인식되기 위한 최소 이웃 사각형 수, 값이 클수록 검출되는 얼굴이 더 정확하다
@@ -225,11 +276,47 @@ class App(QWidget):
 
         except Exception as e :
             print(e)
-            
+
+    # 라인 검출과 중심점을 찾고 자율주행 동작 시키기
+    def line_tracing(self, img) :
+        global car_state
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+
+        height, width = thresh.shape
+        thresh = thresh[height // 2:, :]
+        edges = cv2.Canny(thresh, 0, 50)
+        cv2.imshow("edges", thresh)
+        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+        lagest_contour = max(contours, key=cv2.contourArea) if contours else None
+
+        if lagest_contour is not None :
+            M = cv2.moments(lagest_contour)
+            if M["m00"] != 0 :
+                cX = int(M["m10"] / M["m00"])
+                cY = int(M["m01"] / M["m00"])
+
+                height, width = img.shape[:2]
+                error = cX - width // 2
+
+                if error > 10 :
+                    car_state = "left"
+                elif error < -10 :
+                    car_state = "right"
+                else :
+                    car_state = "go"
+            else :
+                cX, cY = 0, 0
+                self.stop()
+            cv2.circle(img, (cX, cY + height // 2), 10, (0, 255, 0), -1)
+
+        else :
+            print("No contour found")
+            self.stop()        
         
 
-    def closeEvent(self, event) :
-        
+    def closeEvent(self, event) :   
         event.accept()
 
 
