@@ -6,7 +6,7 @@
 ## 사용방법
 1. 가상환경 설정 해줍니다.
 2. 코드 사용에 필요한 라이브러리를 pip install을 통해 설치해줍니다.
-pip install opencv -- python PyQt5 torch torch yolov5
+pip install opencv -- python, PyQt5, torch, torch vision, yolov5
 3. 얼굴 검출을 위해 https://github.com/opencv/opencv/tree/master/data/haarcascades 에서 haarcascade_frontalface_default.xml 파일을 다운받고 코드 실행할 폴더에 저장시킵니다.
 4. 학습된 YOLO 모델을 사용하기 위해 best.pt 파일을 코드 실행할 폴더에 저장시킵니다.
 5. 아두이노 자동차를 윈도우 모바일 핫스팟에 연결하여 ip주소를 받아 파이썬 코드에 ip주소를 수정합니다.
